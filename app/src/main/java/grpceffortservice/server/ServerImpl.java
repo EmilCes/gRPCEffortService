@@ -4,11 +4,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 
 import com.google.protobuf.ByteString;
-import com.google.protobuf.ByteString.Output;
 import com.proto.audio.Video.DataChunkResponse;
 import com.proto.audio.Video.DownloadVideoRequest;
 import com.proto.audio.VideoServiceGrpc.VideoServiceImplBase;
@@ -19,34 +19,36 @@ public class ServerImpl extends VideoServiceImplBase {
 
     @Override
     public void downloadVideo(DownloadVideoRequest request, StreamObserver<DataChunkResponse> responseObserver) {
-        String videoName =  request.getName();
-        System.out.println("\n\nSending Video: " + request.getName());
+        String videoName = request.getName();
+        System.out.println("\n\nSending Video: " + videoName);
 
-        try {
-            InputStream fileStream = ServerImpl.class.getResourceAsStream("/uploads/" + videoName);
-
-            int bufferSize = 1024;
-            byte[] buffer = new byte[bufferSize];
-    
-            int length;
-            try {
-                while ((length = fileStream.read(buffer, 0, bufferSize)) != -1) {
-                    DataChunkResponse response = DataChunkResponse.newBuilder()
-                            .setData(ByteString.copyFrom(buffer, 0, length))
-                            .build();
-                    responseObserver.onNext(response);
-                }
-                fileStream.close();
-            } catch (IOException e) {
-                System.out.println("Could not get file " + videoName);
-            }
-    
-            responseObserver.onCompleted();
-        } catch (Exception e) {
-            e.printStackTrace();
+        Path videoPath = Paths.get("app/src/main/resources/uploads/", videoName).toAbsolutePath();
+        if (!Files.exists(videoPath)) {
+            responseObserver.onError(new IOException("File not found: " + videoName));
+            return;
         }
 
+        try (InputStream fileStream = Files.newInputStream(videoPath)) {
+            int bufferSize = 1024;
+            byte[] buffer = new byte[bufferSize];
+            int length;
 
+            while ((length = fileStream.read(buffer, 0, bufferSize)) != -1) {
+                DataChunkResponse response = DataChunkResponse.newBuilder()
+                        .setData(ByteString.copyFrom(buffer, 0, length))
+                        .build();
+                responseObserver.onNext(response);
+            }
+
+            responseObserver.onCompleted();
+
+        } catch (IOException e) {
+            System.out.println("Could not get file " + videoName);
+            responseObserver.onError(e);
+        } catch (Exception e) {
+            e.printStackTrace();
+            responseObserver.onError(e);
+        }
     }
 
     @Override
@@ -57,35 +59,42 @@ public class ServerImpl extends VideoServiceImplBase {
 
             @Override
             public void onNext(DataChunkResponse request) {
-                if (request.hasName()) {
-                    videoName = request.getName();
-                    System.out.println("\nReceiving the file: " + videoName);
-                    try {
+                try {
+                    if (request.hasName()) {
+                        videoName = request.getName();
+                        System.out.println("\nReceiving the file: " + videoName);
                         var videoPath = Paths.get("app/src/main/resources/uploads/" + videoName).toAbsolutePath();
                         writer = Files.newOutputStream(videoPath, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                } else if (request.hasData()) {
-                    try {
+                    } else if (request.hasData()) {
                         writer.write(request.getData().toByteArray());
-                    } catch (IOException e) {
-                        e.printStackTrace();
                     }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    responseObserver.onError(e);
                 }
             }
 
             @Override
             public void onError(Throwable t) {
-                this.onCompleted();
+                try {
+                    if (writer != null) {
+                        writer.close();
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                responseObserver.onError(t);
             }
 
             @Override
             public void onCompleted() {
                 try {
-                    writer.close();
+                    if (writer != null) {
+                        writer.close();
+                    }
                 } catch (IOException e) {
                     e.printStackTrace();
+                    responseObserver.onError(e);
                 }
 
                 DownloadVideoRequest response = DownloadVideoRequest.newBuilder().setName(videoName).build();
@@ -93,9 +102,6 @@ public class ServerImpl extends VideoServiceImplBase {
                 responseObserver.onCompleted();
                 System.out.println("\nRecepción de datos terminada.");
             }
-
         };
-    }    
-
+    }
 }
-
